@@ -15,7 +15,7 @@ struct TerminalScreen: View {
             TerminalContainer(session: session, fontSize: fontSize, theme: theme)
                 .ignoresSafeArea(.container, edges: .bottom)
         }
-        .background(Color(hex: theme.colors.bg).ignoresSafeArea())
+        .background(SwiftUI.Color(hex: theme.colors.bg).ignoresSafeArea())
         .alert(item: $session.hostKeyPrompt) { prompt in
             Alert(
                 title: Text(prompt.changed ? "⚠️ 서버 키가 변경됨" : "새 서버"),
@@ -68,10 +68,10 @@ struct TerminalScreen: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(Color.panel)
+        .background(SwiftUI.Color.panel)
     }
 
-    private var statusColor: Color {
+    private var statusColor: SwiftUI.Color {
         switch session.state {
         case .connected: return .accentGreen
         case .connecting, .idle: return .yellow
