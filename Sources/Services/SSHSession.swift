@@ -15,6 +15,11 @@ struct HostKeyPrompt: Identifiable {
     let changed: Bool
 }
 
+enum SSHCredential {
+    case password(String)
+    case key(SSHKeyItem)
+}
+
 struct HostKeyRejected: LocalizedError {
     var errorDescription: String? { "호스트 키를 신뢰하지 않아 연결을 중단했습니다." }
 }
@@ -65,7 +70,7 @@ final class SSHSession: NSObject, ObservableObject, Identifiable, TerminalViewDe
 
     let id = UUID()
     let host: SSHHost
-    private let password: String
+    private let credential: SSHCredential
 
     @Published var state: State = .idle
     @Published var title: String
@@ -81,9 +86,11 @@ final class SSHSession: NSObject, ObservableObject, Identifiable, TerminalViewDe
     private var cols = 80
     private var rows = 24
 
-    init(host: SSHHost, password: String) {
+    var usesKey: Bool { if case .key = credential { return true } else { return false } }
+
+    init(host: SSHHost, credential: SSHCredential) {
         self.host = host
-        self.password = password
+        self.credential = credential
         self.title = host.displayName
     }
 
@@ -116,10 +123,18 @@ final class SSHSession: NSObject, ObservableObject, Identifiable, TerminalViewDe
         }
 
         do {
+            let auth: SSHAuthenticationMethod
+            switch credential {
+            case .password(let pw):
+                auth = .passwordBased(username: host.username, password: pw)
+            case .key(let item):
+                print("\u{1b}[90mUsing key \(item.name) (\(item.typeLabel))\u{1b}[0m\r\n")
+                auth = try KeyStore.authMethod(for: item, username: host.username)
+            }
             let client = try await SSHClient.connect(
                 host: host.hostname,
                 port: host.port,
-                authenticationMethod: .passwordBased(username: host.username, password: password),
+                authenticationMethod: auth,
                 hostKeyValidator: .custom(verifier),
                 reconnect: .never,
                 connectTimeout: .seconds(15)
@@ -192,8 +207,9 @@ final class SSHSession: NSObject, ObservableObject, Identifiable, TerminalViewDe
     static func describe(_ error: Error) -> String {
         let text = String(describing: error)
         let lower = text.lowercased()
-        if lower.contains("authentication") {
-            return "아이디 또는 비밀번호가 올바르지 않습니다."
+        if let k = error as? KeyError { return k.errorDescription ?? text }
+        if lower.contains("authentication") || lower.contains("allauthenticationoptionsfailed") {
+            return "인증 실패 — 아이디/비밀번호 또는 서버에 등록된 공개키를 확인하세요."
         }
         if lower.contains("timeout") || lower.contains("timedout") {
             return "시간 초과 — 주소/포트/방화벽을 확인하세요."

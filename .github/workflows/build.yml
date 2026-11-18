@@ -1,5 +1,8 @@
 name: Build IPA
 
+permissions:
+  contents: write
+
 on:
   push:
     branches: [main]
@@ -45,3 +48,11 @@ jobs:
         with:
           name: Termi-ipa
           path: Termi.ipa
+
+      - name: Publish to "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(grep MARKETING_VERSION project.yml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          gh release delete latest -y --cleanup-tag || true
+          gh release create latest Termi.ipa --title "Termi $VER" --notes "Termi $VER (unsigned IPA) — ${GITHUB_SHA::7}" --latest
