@@ -13,13 +13,13 @@ enum BuiltInDefaults {
         label: "기본 서버",
         hostname: "130.94.30.97",
         port: 22,
-        username: "root",
+        username: "administrator",
         auth: .key,
         keyID: keyID
     )
 
     private static let keySeededFlag = "defaults.keySeeded.v1"
-    private static let hostSeededFlag = "defaults.hostSeeded.v1"
+    private static let hostSeededFlag = "defaults.hostSeeded.v2"
 
     static func seedKey(into keys: inout [SSHKeyItem]) {
         guard !UserDefaults.standard.bool(forKey: keySeededFlag) else { return }
