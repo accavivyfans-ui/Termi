@@ -240,11 +240,19 @@ struct AddKeyView: View {
                         .disabled(mode != .generate && pem.isEmpty && pubText.isEmpty)
                 }
             }
-            .fileImporter(isPresented: $importing, allowedContentTypes: UTType.sshKeyFiles, allowsMultipleSelection: true) { result in
-                switch result {
-                case .success(let urls): load(urls)
-                case .failure(let e): error = e.localizedDescription
+            .sheet(isPresented: $importing) {
+                DocumentPicker { urls in
+                    importing = false
+                    load(urls)
+                    // 암호 없는 키면 '가져오기'를 따로 안 눌러도 바로 등록
+                    if error == nil, !pem.isEmpty || !pubText.isEmpty, passphrase.isEmpty {
+                        // 선택창이 완전히 닫힌 뒤에 등록(+ 이 화면 닫기)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { commit(autoFromPicker: true) }
+                    }
+                } onCancel: {
+                    importing = false
                 }
+                .ignoresSafeArea()
             }
         }
     }
@@ -286,7 +294,7 @@ struct AddKeyView: View {
         }
     }
 
-    private func commit() {
+    private func commit(autoFromPicker: Bool = false) {
         do {
             let item: SSHKeyItem
             if mode == .generate {
@@ -299,8 +307,40 @@ struct AddKeyView: View {
             }
             onCreated?(item)
             dismiss()
+        } catch KeyError.passphrase where autoFromPicker {
+            self.error = "이 키는 암호(passphrase)가 걸려 있어요. 암호를 입력하고 '가져오기'를 누르세요."
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+}
+
+/// iOS 기본 문서 선택창. asCopy로 받아서 iCloud 미다운로드 / 보안 범위 문제 없이 바로 읽는다.
+struct DocumentPicker: UIViewControllerRepresentable {
+    var onPick: ([URL]) -> Void
+    var onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let vc = UIDocumentPickerViewController(forOpeningContentTypes: UTType.sshKeyFiles, asCopy: true)
+        vc.allowsMultipleSelection = true
+        vc.shouldShowFileExtensions = true
+        vc.delegate = context.coordinator
+        return vc
+    }
+
+    func updateUIViewController(_ vc: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let parent: DocumentPicker
+        init(_ parent: DocumentPicker) { self.parent = parent }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            parent.onPick(urls)
+        }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            parent.onCancel()
         }
     }
 }
