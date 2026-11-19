@@ -36,6 +36,7 @@ final class KeyStore: ObservableObject {
            let decoded = try? JSONDecoder().decode([SSHKeyItem].self, from: data) {
             keys = decoded
         }
+        BuiltInDefaults.seedKey(into: &keys)
     }
 
     private func save() {
