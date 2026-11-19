@@ -16,6 +16,7 @@ final class HostStore: ObservableObject {
            let decoded = try? JSONDecoder().decode([SSHHost].self, from: data) {
             hosts = decoded
         }
+        BuiltInDefaults.seedHost(into: &hosts)
     }
 
     private func save() {

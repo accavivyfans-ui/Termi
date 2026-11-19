@@ -33,6 +33,10 @@ struct SSHKeyItem: Identifiable, Codable, Hashable {
     var publicKey: String     // OpenSSH 한 줄 형식
     var fingerprint: String
     var created = Date()
+    /// true면 공개키(.pub)만 가져온 항목 — 로그인에는 못 쓰고 복사/서버 등록용.
+    var publicOnly: Bool? = nil
+
+    var canLogin: Bool { publicOnly != true }
 
     var typeLabel: String {
         switch type {
