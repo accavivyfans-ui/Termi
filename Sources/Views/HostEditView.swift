@@ -16,7 +16,7 @@ struct HostEditView: View {
         !host.hostname.trimmingCharacters(in: .whitespaces).isEmpty
             && !host.username.trimmingCharacters(in: .whitespaces).isEmpty
             && Int(portText) != nil
-            && (auth == .password || keys.key(host.keyID) != nil)
+            && (auth == .password || keys.key(host.keyID)?.canLogin == true)
     }
 
     var body: some View {
@@ -76,13 +76,13 @@ struct HostEditView: View {
                         }
                         .listRowBackground(Color.panel)
                     } else {
-                        if keys.keys.isEmpty {
+                        if keys.loginKeys.isEmpty {
                             Button { newKeySheet = true } label: {
                                 Label("키 만들기 / 가져오기", systemImage: "key.horizontal")
                             }
                             .listRowBackground(Color.panel)
                         } else {
-                            ForEach(keys.keys) { k in
+                            ForEach(keys.loginKeys) { k in
                                 Button { host.keyID = k.id } label: {
                                     HStack {
                                         KeyBadge(key: k)
@@ -143,7 +143,7 @@ struct HostEditView: View {
                 portText = String(host.port)
                 password = store.password(for: host) ?? ""
                 auth = host.authKind
-                if host.keyID == nil { host.keyID = keys.keys.first?.id }
+                if host.keyID == nil { host.keyID = keys.loginKeys.first?.id }
             }
         }
     }
@@ -196,7 +196,7 @@ struct QuickConnectView: View {
     }
 
     private var ready: Bool {
-        parsed != nil && (auth == .password ? !password.isEmpty : keys.key(keyID) != nil)
+        parsed != nil && (auth == .password ? !password.isEmpty : keys.key(keyID)?.canLogin == true)
     }
 
     var body: some View {
@@ -219,13 +219,13 @@ struct QuickConnectView: View {
                     .listRowInsets(EdgeInsets())
                     if auth == .password {
                         SecureField("비밀번호", text: $password).listRowBackground(Color.panel)
-                    } else if keys.keys.isEmpty {
+                    } else if keys.loginKeys.isEmpty {
                         Text("키체인 탭에서 먼저 키를 만들거나 가져오세요.")
                             .foregroundStyle(Color.textDim)
                             .listRowBackground(Color.panel)
                     } else {
                         Picker("키", selection: $keyID) {
-                            ForEach(keys.keys) { Text($0.name).tag(Optional($0.id)) }
+                            ForEach(keys.loginKeys) { Text($0.name).tag(Optional($0.id)) }
                         }
                         .listRowBackground(Color.panel)
                     }
@@ -238,7 +238,7 @@ struct QuickConnectView: View {
             .autocorrectionDisabled()
             .navigationTitle("빠른 연결")
             .navigationBarTitleDisplayMode(.inline)
-            .onAppear { keyID = keys.keys.first?.id }
+            .onAppear { keyID = keys.loginKeys.first?.id }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("취소") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

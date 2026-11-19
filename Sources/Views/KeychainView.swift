@@ -18,7 +18,10 @@ struct KeychainView: View {
                                 HStack(spacing: 12) {
                                     KeyBadge(key: k)
                                     VStack(alignment: .leading, spacing: 3) {
-                                        Text(k.name).font(.system(size: 16, weight: .semibold)).foregroundStyle(.white)
+                                        HStack(spacing: 6) {
+                                            Text(k.name).font(.system(size: 16, weight: .semibold)).foregroundStyle(.white)
+                                            if !k.canLogin { PublicOnlyTag() }
+                                        }
                                         Text(k.fingerprint)
                                             .font(.system(size: 11, design: .monospaced))
                                             .foregroundStyle(Color.textDim)
@@ -63,7 +66,7 @@ struct KeychainView: View {
                 .frame(width: 76, height: 76)
                 .background(Color.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
             Text("SSH 키로 비밀번호 없이 로그인").font(.title3.bold())
-            Text("여기서 키를 새로 만들거나, PC의 개인키 파일(id_ed25519 등)을 가져오세요. 공개키(.pub)는 서버나 GitHub에 등록하면 됩니다.")
+            Text("여기서 키를 새로 만들거나, PC의 키 파일(id_ed25519 / id_ed25519.pub 등)을 가져오세요. 로그인에는 개인키가 필요하고, 공개키(.pub)만 가져오면 복사·서버 등록용으로 쓸 수 있어요.")
                 .font(.subheadline)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Color.textDim)
@@ -77,6 +80,29 @@ struct KeychainView: View {
         .padding(.vertical, 60)
         .padding(.horizontal, 10)
     }
+}
+
+struct PublicOnlyTag: View {
+    var body: some View {
+        Text("공개키만")
+            .font(.system(size: 10, weight: .bold))
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(Color.orange.opacity(0.18), in: Capsule())
+            .foregroundStyle(.orange)
+    }
+}
+
+extension UTType {
+    /// .pub — iOS가 Publisher 문서 등으로 오인해 회색 처리하는 경우가 있어 확장자로 직접 등록
+    static let sshPublicKey: UTType = UTType(filenameExtension: "pub", conformingTo: .data)
+        ?? UTType(filenameExtension: "pub") ?? .data
+    static let sshKeyFiles: [UTType] = {
+        var types: [UTType] = [.sshPublicKey, .plainText, .text, .data, .content, .item]
+        for ext in ["pem", "key", "ppk"] {
+            if let t = UTType(filenameExtension: ext) { types.append(t) }
+        }
+        return types
+    }()
 }
 
 struct KeyBadge: View {
@@ -120,6 +146,7 @@ struct AddKeyView: View {
     @State private var mode: Mode = .generate
     @State private var name = "iPhone"
     @State private var pem = ""
+    @State private var pubText = ""
     @State private var fileName: String?
     @State private var passphrase = ""
     @State private var importing = false
@@ -154,15 +181,19 @@ struct AddKeyView: View {
                         Button { importing = true } label: {
                             HStack {
                                 Image(systemName: "doc.badge.plus")
-                                Text(fileName ?? "개인키 파일 선택 (id_ed25519, id_rsa …)")
+                                Text(fileName ?? "키 파일 선택 (id_ed25519, .pub …)")
                                     .lineLimit(1)
                                 Spacer()
                                 if fileName != nil { Image(systemName: "checkmark").foregroundStyle(Color.accentGreen) }
                             }
                         }
-                        SecureField("암호 (passphrase, 없으면 비움)", text: $passphrase)
+                        if !isPublicOnlyImport {
+                            SecureField("암호 (passphrase, 없으면 비움)", text: $passphrase)
+                        }
                     } footer: {
-                        Text("`.pub`가 아닌 개인키 파일을 고르세요. 파일 앱 → iCloud / 이 iPhone / Termi 폴더에서 선택할 수 있어요.")
+                        Text(isPublicOnlyImport
+                             ? "공개키(.pub)만 골랐어요. 복사·GitHub·서버 등록용으로 저장되고, 로그인하려면 나중에 짝이 되는 개인키를 가져오면 같은 항목에 합쳐져요."
+                             : "개인키(id_ed25519)와 공개키(.pub)를 함께 골라도 되고, .pub만 골라도 돼요. 파일 앱 → iCloud / 이 iPhone / Termi 폴더에서 선택할 수 있어요.")
                     }
                     .listRowBackground(Color.panel)
                 case .paste:
@@ -172,7 +203,7 @@ struct AddKeyView: View {
                             .frame(minHeight: 160)
                             .overlay(alignment: .topLeading) {
                                 if pem.isEmpty {
-                                    Text("-----BEGIN OPENSSH PRIVATE KEY-----\n…")
+                                    Text("-----BEGIN OPENSSH PRIVATE KEY-----\n…\n\n또는 공개키 한 줄: ssh-ed25519 AAAA…")
                                         .font(.system(size: 11, design: .monospaced))
                                         .foregroundStyle(Color.textDim.opacity(0.6))
                                         .padding(.top, 8).padding(.leading, 4)
@@ -180,7 +211,9 @@ struct AddKeyView: View {
                                 }
                             }
                         Button("클립보드에서 붙여넣기") { pem = UIPasteboard.general.string ?? "" }
-                        SecureField("암호 (passphrase, 없으면 비움)", text: $passphrase)
+                        if !isPublicOnlyImport {
+                            SecureField("암호 (passphrase, 없으면 비움)", text: $passphrase)
+                        }
                     }
                     .listRowBackground(Color.panel)
                 }
@@ -204,30 +237,52 @@ struct AddKeyView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(mode == .generate ? "만들기" : "가져오기") { commit() }
                         .fontWeight(.semibold)
-                        .disabled(mode != .generate && pem.isEmpty)
+                        .disabled(mode != .generate && pem.isEmpty && pubText.isEmpty)
                 }
             }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.item, .data, .text]) { result in
+            .fileImporter(isPresented: $importing, allowedContentTypes: UTType.sshKeyFiles, allowsMultipleSelection: true) { result in
                 switch result {
-                case .success(let url):
-                    let scoped = url.startAccessingSecurityScopedResource()
-                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    if let text = try? String(contentsOf: url, encoding: .utf8) {
-                        pem = text
-                        fileName = url.lastPathComponent
-                        if name == "iPhone" || name.isEmpty { name = url.deletingPathExtension().lastPathComponent }
-                        if url.pathExtension == "pub" || text.hasPrefix("ssh-") {
-                            error = "이건 공개키(.pub)예요. 로그인하려면 짝이 되는 개인키 파일(확장자 없는 id_ed25519 등)이 필요해요."
-                        } else {
-                            error = nil
-                        }
-                    } else {
-                        error = "파일을 읽을 수 없습니다."
-                    }
-                case .failure(let e):
-                    error = e.localizedDescription
+                case .success(let urls): load(urls)
+                case .failure(let e): error = e.localizedDescription
                 }
             }
+        }
+    }
+
+    private var isPublicOnlyImport: Bool {
+        switch mode {
+        case .generate: return false
+        case .file: return pem.isEmpty && !pubText.isEmpty
+        case .paste: return SSHWire.looksLikePublicKey(pem)
+        }
+    }
+
+    private func load(_ urls: [URL]) {
+        var priv = "", pub = "", names: [String] = [], baseName: String?
+        for url in urls {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            guard let text = (try? String(contentsOf: url, encoding: .utf8))
+                    ?? (try? Data(contentsOf: url)).flatMap({ String(data: $0, encoding: .ascii) }) else {
+                error = "파일을 읽을 수 없습니다: \(url.lastPathComponent)"
+                return
+            }
+            names.append(url.lastPathComponent)
+            if url.pathExtension.lowercased() == "pub" || SSHWire.looksLikePublicKey(text) {
+                pub = text
+                if baseName == nil { baseName = url.deletingPathExtension().lastPathComponent }
+            } else {
+                priv = text
+                baseName = url.deletingPathExtension().lastPathComponent
+            }
+        }
+        pem = priv
+        pubText = pub
+        fileName = names.joined(separator: " + ")
+        if name == "iPhone" || name.isEmpty, let baseName { name = baseName }
+        error = nil
+        if priv.isEmpty, !pub.isEmpty, (try? SSHWire.parsePublicKey(pub)) == nil {
+            error = KeyError.notPublicKey.localizedDescription
         }
     }
 
@@ -236,8 +291,11 @@ struct AddKeyView: View {
             let item: SSHKeyItem
             if mode == .generate {
                 item = keys.generateEd25519(name: name.isEmpty ? "iPhone" : name)
+            } else if isPublicOnlyImport {
+                item = try keys.importPublicKey(mode == .file ? pubText : pem, name: name)
             } else {
-                item = try keys.importPrivateKey(pem, name: name, passphrase: passphrase)
+                item = try keys.importPrivateKey(pem, name: name, passphrase: passphrase,
+                                                 publicKey: mode == .file ? pubText : nil)
             }
             onCreated?(item)
             dismiss()
@@ -276,6 +334,17 @@ struct KeyDetailView: View {
                         Text("\(key.typeLabel) · \(key.created.formatted(date: .abbreviated, time: .omitted))")
                             .font(.caption).foregroundStyle(Color.textDim)
                     }
+                }
+
+                if !key.canLogin {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        Text("공개키(.pub)만 있는 항목이라 로그인에는 쓸 수 없어요. 복사·GitHub·서버 등록용입니다. 짝이 되는 개인키를 키체인에서 가져오면 이 항목에 합쳐져요.")
+                            .font(.footnote).foregroundStyle(Color.textDim)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
 
                 VStack(alignment: .leading, spacing: 8) {

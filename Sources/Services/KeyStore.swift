@@ -3,7 +3,7 @@ import CryptoKit
 import Citadel
 
 enum KeyError: LocalizedError {
-    case notOpenSSH, unsupported(String), passphrase, missing, corrupt
+    case notOpenSSH, unsupported(String), passphrase, missing, corrupt, notPublicKey, publicOnly, duplicate(String), mismatch
 
     var errorDescription: String? {
         switch self {
@@ -13,6 +13,10 @@ enum KeyError: LocalizedError {
         case .passphrase: return "암호(passphrase)가 필요하거나 틀렸습니다."
         case .missing: return "이 키의 개인키를 찾을 수 없습니다. 키를 다시 가져오세요."
         case .corrupt: return "키 파일이 손상되었습니다."
+        case .notPublicKey: return "공개키 형식이 아닙니다. (ssh-ed25519 AAAA… / ssh-rsa AAAA… 한 줄)"
+        case .publicOnly: return "이 키는 공개키(.pub)만 있어서 로그인에 쓸 수 없어요. 키체인에서 짝이 되는 개인키를 가져오세요."
+        case .duplicate(let n): return "이미 키체인에 있는 키입니다: \(n)"
+        case .mismatch: return "선택한 개인키와 공개키(.pub)가 서로 짝이 아닙니다."
         }
     }
 }
@@ -37,6 +41,9 @@ final class KeyStore: ObservableObject {
     private func save() {
         if let data = try? JSONEncoder().encode(keys) { try? data.write(to: url, options: .atomic) }
     }
+
+    /// 로그인에 쓸 수 있는(개인키가 있는) 키
+    var loginKeys: [SSHKeyItem] { keys.filter(\.canLogin) }
 
     func key(_ id: UUID?) -> SSHKeyItem? {
         guard let id else { return nil }
@@ -63,20 +70,59 @@ final class KeyStore: ObservableObject {
 
     /// OpenSSH 개인키 텍스트 가져오기. 파싱/암호까지 검증한 뒤 저장.
     @discardableResult
-    func importPrivateKey(_ text: String, name: String, passphrase: String) throws -> SSHKeyItem {
+    func importPrivateKey(_ text: String, name: String, passphrase: String, publicKey pubText: String? = nil) throws -> SSHKeyItem {
         let pem = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard pem.hasPrefix("-----BEGIN OPENSSH PRIVATE KEY-----") else { throw KeyError.notOpenSSH }
         let (type, blob) = try SSHWire.publicBlob(fromOpenSSH: pem)
+        let fingerprint = SSHWire.fingerprint(blob)
+        // 같이 고른 .pub가 있으면 짝이 맞는지 확인하고, 그 주석(comment)을 그대로 쓴다
+        var publicLine = "\(type) \(blob.base64EncodedString()) \(name.isEmpty ? "imported" : name.replacingOccurrences(of: " ", with: "-"))"
+        if let pubText, !pubText.isEmpty {
+            let pub = try SSHWire.parsePublicKey(pubText)
+            guard pub.fingerprint == fingerprint else { throw KeyError.mismatch }
+            publicLine = pub.line
+        }
         // 실제로 열리는지 확인
         _ = try Self.authMethod(pem: pem, passphrase: passphrase, username: "check")
-        let item = SSHKeyItem(
+
+        var item: SSHKeyItem
+        if let i = keys.firstIndex(where: { $0.fingerprint == fingerprint }) {
+            // 이미 공개키만 있던 항목이면 개인키를 채워서 업그레이드
+            guard !keys[i].canLogin else { throw KeyError.duplicate(keys[i].name) }
+            item = keys[i]
+            item.publicOnly = nil
+            if !name.isEmpty { item.name = name }
+            Keychain.set(pem, for: "key-\(item.id.uuidString)")
+            if !passphrase.isEmpty { Keychain.set(passphrase, for: "keypass-\(item.id.uuidString)") }
+            keys[i] = item
+            return item
+        }
+        item = SSHKeyItem(
             name: name.isEmpty ? type : name,
             type: type,
-            publicKey: "\(type) \(blob.base64EncodedString()) \(name.isEmpty ? "imported" : name.replacingOccurrences(of: " ", with: "-"))",
-            fingerprint: SSHWire.fingerprint(blob)
+            publicKey: publicLine,
+            fingerprint: fingerprint
         )
         Keychain.set(pem, for: "key-\(item.id.uuidString)")
         if !passphrase.isEmpty { Keychain.set(passphrase, for: "keypass-\(item.id.uuidString)") }
+        keys.append(item)
+        return item
+    }
+
+    /// 공개키(.pub) 한 줄 가져오기 — 로그인은 못 하고, 복사·GitHub·서버 등록용.
+    @discardableResult
+    func importPublicKey(_ text: String, name: String) throws -> SSHKeyItem {
+        let pub = try SSHWire.parsePublicKey(text)
+        if let existing = keys.first(where: { $0.fingerprint == pub.fingerprint }) {
+            throw KeyError.duplicate(existing.name)
+        }
+        let item = SSHKeyItem(
+            name: name.isEmpty ? (pub.comment ?? pub.type) : name,
+            type: pub.type,
+            publicKey: pub.line,
+            fingerprint: pub.fingerprint,
+            publicOnly: true
+        )
         keys.append(item)
         return item
     }
@@ -94,6 +140,7 @@ final class KeyStore: ObservableObject {
     // MARK: - Auth
 
     nonisolated static func authMethod(for item: SSHKeyItem, username: String) throws -> SSHAuthenticationMethod {
+        guard item.canLogin else { throw KeyError.publicOnly }
         guard let stored = Keychain.get("key-\(item.id.uuidString)") else { throw KeyError.missing }
         if stored.hasPrefix("raw-ed25519:") {
             guard let raw = Data(base64Encoded: String(stored.dropFirst("raw-ed25519:".count))) else { throw KeyError.corrupt }
@@ -134,6 +181,35 @@ enum SSHWire {
 
     static func fingerprint(_ blob: Data) -> String {
         "SHA256:" + Data(SHA256.hash(data: blob)).base64EncodedString().replacingOccurrences(of: "=", with: "")
+    }
+
+    struct PublicKey {
+        let type: String
+        let blob: Data
+        let comment: String?
+        var fingerprint: String { SSHWire.fingerprint(blob) }
+        var line: String { "\(type) \(blob.base64EncodedString())" + (comment.map { " \($0)" } ?? "") }
+    }
+
+    static func looksLikePublicKey(_ text: String) -> Bool {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.hasPrefix("ssh-") || t.hasPrefix("ecdsa-") || t.hasPrefix("sk-")
+    }
+
+    /// OpenSSH 공개키 한 줄("ssh-ed25519 AAAA… comment") 파싱 + 검증
+    static func parsePublicKey(_ text: String) throws -> PublicKey {
+        let line = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty && !$0.hasPrefix("#") } ?? ""
+        let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true).map(String.init)
+        guard parts.count >= 2, let blob = Data(base64Encoded: parts[1]), blob.count >= 4 else { throw KeyError.notPublicKey }
+        let bytes = [UInt8](blob)
+        let tlen = bytes[0..<4].reduce(0) { ($0 << 8) | Int($1) }
+        guard 4 + tlen <= bytes.count,
+              let inner = String(bytes: bytes[4..<4 + tlen], encoding: .utf8),
+              inner == parts[0] else { throw KeyError.notPublicKey }
+        let comment = parts.count > 2 ? parts[2].trimmingCharacters(in: .whitespaces) : nil
+        return PublicKey(type: parts[0], blob: blob, comment: (comment?.isEmpty ?? true) ? nil : comment)
     }
 
     /// openssh-key-v1 파일 헤더에서 (암호화돼 있어도 평문인) 공개키 blob을 읽는다.
