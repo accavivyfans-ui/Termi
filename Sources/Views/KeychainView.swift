@@ -122,7 +122,6 @@ struct AddKeyView: View {
     @State private var pem = ""
     @State private var fileName: String?
     @State private var passphrase = ""
-    @State private var importing = false
     @State private var error: String?
 
     var body: some View {
@@ -134,6 +133,13 @@ struct AddKeyView: View {
                 .pickerStyle(.segmented)
                 .listRowBackground(Color.clear)
                 .listRowInsets(EdgeInsets())
+
+                if let error {
+                    Section {
+                        Text(error).font(.footnote).foregroundStyle(.red)
+                    }
+                    .listRowBackground(Color.panel)
+                }
 
                 Section("이름") {
                     TextField("키 이름", text: $name)
@@ -151,7 +157,7 @@ struct AddKeyView: View {
                     .listRowBackground(Color.panel)
                 case .file:
                     Section {
-                        Button { importing = true } label: {
+                        Button { pickFile() } label: {
                             HStack {
                                 Image(systemName: "doc.badge.plus")
                                 Text(fileName ?? "개인키 파일 선택 (id_ed25519, id_rsa …)")
@@ -185,12 +191,6 @@ struct AddKeyView: View {
                     .listRowBackground(Color.panel)
                 }
 
-                if let error {
-                    Section {
-                        Text(error).font(.footnote).foregroundStyle(.red)
-                    }
-                    .listRowBackground(Color.panel)
-                }
             }
             .scrollContentBackground(.hidden)
             .background(Color.appBackground)
@@ -207,26 +207,30 @@ struct AddKeyView: View {
                         .disabled(mode != .generate && pem.isEmpty)
                 }
             }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.item, .data, .text]) { result in
-                switch result {
-                case .success(let url):
-                    let scoped = url.startAccessingSecurityScopedResource()
-                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    if let text = try? String(contentsOf: url, encoding: .utf8) {
-                        pem = text
-                        fileName = url.lastPathComponent
-                        if name == "iPhone" || name.isEmpty { name = url.deletingPathExtension().lastPathComponent }
-                        if url.pathExtension == "pub" || text.hasPrefix("ssh-") {
-                            error = "이건 공개키(.pub)예요. 로그인하려면 짝이 되는 개인키 파일(확장자 없는 id_ed25519 등)이 필요해요."
-                        } else {
-                            error = nil
-                        }
-                    } else {
-                        error = "파일을 읽을 수 없습니다."
-                    }
-                case .failure(let e):
-                    error = e.localizedDescription
+        }
+    }
+
+    private func pickFile() {
+        DocumentPicker.present { result, url in
+            switch result {
+            case .success(let data):
+                let text = String(decoding: data, as: UTF8.self)
+                    .replacingOccurrences(of: "\r\n", with: "\n")
+                pem = text
+                fileName = url?.lastPathComponent
+                if let url, name == "iPhone" || name.isEmpty {
+                    name = url.deletingPathExtension().lastPathComponent
                 }
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if url?.pathExtension == "pub" || trimmed.hasPrefix("ssh-") {
+                    error = "이건 공개키(.pub)예요. 로그인하려면 짝이 되는 개인키 파일(확장자 없는 id_ed25519 등)이 필요해요."
+                } else if trimmed.isEmpty {
+                    error = "빈 파일이에요."
+                } else {
+                    error = nil
+                }
+            case .failure(let e):
+                error = "파일을 읽을 수 없습니다: \(e.localizedDescription)"
             }
         }
     }
